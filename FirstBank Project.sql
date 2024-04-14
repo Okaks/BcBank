@@ -1,6 +1,6 @@
 Use BcBankDB
 
---Retrieve customer account details--
+--Retrieve account details with customer information--
 SELECT
 	a.AccountID,
 	c.CustomerID,
@@ -18,14 +18,60 @@ JOIN AccountStatus s
 ON a.StatusID=s.StatusID
 ORDER BY OpeningDate ASC;
 
---Retrieve customer transaction details with their other details--
+
+---From the customer details generated, identify how many customers are Active, Inactive and Dormant.
+SELECT
+    ast.StatusTypes,
+    COUNT(ast.StatusTypes) AS StatusCount,
+    CAST((COUNT(ast.StatusTypes) * 100.0) / SUM(COUNT(ast.StatusTypes)) OVER () AS DECIMAL(10, 0)) AS Percentage
+FROM AccountStatus ast
+JOIN AccountTypes a ON ast.StatusID = a.StatusID
+GROUP BY ast.StatusTypes;
+
+
+--Identify customers whose accounts are inactive and dormant for reactivations.
+SELECT
+	a.AccountID,
+	c.CustomerID,
+	CONCAT(c.FirstNames,  '  ', c.LastName) AS CustomerName,
+	FORMAT(a.AccountOpeningDate, 'yyyy-MM-dd') AS OpeningDate,
+	a.AccountTypes,
+	s.StatusTypes,
+	c.Email,
+	c.PhoneNumber
+
+FROM Customer c
+JOIN AccountTypes a 
+ON c.CustomerID=a.CustomerID
+JOIN AccountStatus s
+ON a.StatusID=s.StatusID
+WHERE s.StatusTypes IN ('Inactive', 'Dormant');
+
+
+ --Identify unique customers without cards so that a campaign can be sent to them to get cards.
+ SELECT
+	a.AccountID,
+	c.CustomerID,
+	CONCAT(c.FirstNames,  '  ', c.LastName) AS CustomerName,
+	a.AccountTypes,
+	c.Email,
+	c.PhoneNumber
+
+FROM AccountTypes a 
+JOIN Customer c
+ON c.CustomerID=a.CustomerID
+JOIN AccountStatus s
+ON a.StatusID=s.StatusID
+WHERE a.AccountID Not In (SELECT AccountID FROM Cards);
+
+
+--Retrieve customer transaction details with their Personal details--
 SELECT
 	t.TransactionID,
 	t.AccountID,
 	c.customerID,
 	c.FirstNames + ' ' + c.LastName AS FullName,
 	FORMAT(a.AccountOpeningDate, 'yyyy-MM-dd') AS OpeningDate,
-	s.StatusTypes,
 	t.TransactionAmount,
 	ty.TransactionType,
 	FORMAT(t.TransactionDate, 'yyyy-MM-dd') AS TransactionDate
@@ -47,9 +93,9 @@ SELECT
     a.CustomerID,
     CONCAT(c.FirstNames, ' ', c.LastName) AS FullName,
     ISNULL(FORMAT(SUM(CASE WHEN ty.TransactionType IN ('Deposit', 'Interest Income') 
-	THEN t.TransactionAmount END), '#,##0'),0) AS Inflow,
-	FORMAT(SUM(CASE WHEN ty.TransactionType IN ('Bank Charges', 'Loan Payments', 'POS', 'Transfer', 'Withdrawals') 
-	THEN t.TransactionAmount ELSE 0 END), '#,##0') AS Outflow
+    THEN t.TransactionAmount END), '#,##0'),0) AS Inflow,
+    FORMAT(SUM(CASE WHEN ty.TransactionType IN ('Bank Charges', 'Loan Payments', 'POS', 'Transfer', 'Withdrawals') 
+    THEN t.TransactionAmount ELSE 0 END), '#,##0') AS Outflow
 FROM 
     AccountTypes a
 JOIN 
@@ -62,18 +108,83 @@ GROUP BY
     a.AccountID, a.CustomerID, c.FirstNames, c.LastName
 ORDER BY 
     SUM(CASE WHEN ty.TransactionType IN ('Deposit', 'Interest Income')
-	THEN t.TransactionAmount ELSE 0 END) DESC;
+    THEN t.TransactionAmount ELSE 0 END) DESC;
 
 
---Calculate how much bank charges have been debited from customers Year on Year
-  SELECT 
-	FORMAT(SUM(TransactionAmount),'#,##0') BankCharges,
-	YEAR (TransactionDate) Year_
-  FROM TransactionTable t
-  JOIN TransactionType ty 
-  ON t.TransactionTypeID=ty.TransactionTypeID
-  WHERE ty.TransactionType = 'Bank Charges'
-  GROUP BY YEAR (TransactionDate);
+--Retrieve customer details in a format that seperates inflow from outflow and shows account balance,
+ --Commenting on amy anormalies found.
+SELECT
+    Trans.AccountID,
+    c.CustomerID,
+    c.FirstNames + ' ' + c.LastName AS FullName,
+    FORMAT(ISNULL(Inflow, 0), '#,##0') AS Inflow,
+    FORMAT(Outflow, '#,##0') AS Outflow, 
+    FORMAT(ISNULL(Inflow, 0) - Outflow, '#,##0') AS AccountBal
+FROM
+    (
+       SELECT
+            a.AccountID,
+            a.CustomerID,
+             (
+                SELECT
+                SUM(t.TransactionAmount) AS Inflow
+                FROM TransactionTable t
+                LEFT JOIN TransactionType ty ON t.TransactionTypeID = ty.TransactionTypeID
+                WHERE ty.TransactionType IN ('Deposit', 'Interest Income')
+                AND a.AccountID = t.AccountID
+                ) AS Inflow,
+             (
+                SELECT
+                SUM(t.TransactionAmount ) AS Outflow
+                FROM TransactionTable t
+                LEFT JOIN TransactionType ty ON t.TransactionTypeID = ty.TransactionTypeID
+                WHERE ty.TransactionType IN ('Bank Charges', 'Loan Payments', 'POS', 'Transfer', 'Withdrawals')
+                AND t.AccountID = a.AccountID
+                ) AS Outflow
+            FROM AccountTypes a
+    ) AS Trans
+JOIN Customer c
+ON Trans.CustomerID = c.CustomerID
+WHERE ISNULL(Inflow, 0) - Outflow < 0
+ORDER BY ISNULL(Inflow, 0) - Outflow ASC; 
+
+
+--Retrieve customers with negative bal for futher investigation
+SELECT
+    Trans.AccountID,
+    c.CustomerID,
+    c.FirstNames + ' ' + c.LastName AS FullName,
+    FORMAT(ISNULL(Inflow, 0), '#,##0') AS Inflow,
+    FORMAT(Outflow, '#,##0') AS Outflow, 
+    FORMAT(ISNULL(Inflow, 0) - Outflow, '#,##0') AS AccountBal
+FROM
+    (
+       SELECT
+            a.AccountID,
+            a.CustomerID,
+             (
+                SELECT
+                SUM(t.TransactionAmount) AS Inflow
+                FROM TransactionTable t
+                LEFT JOIN TransactionType ty ON t.TransactionTypeID = ty.TransactionTypeID
+                WHERE ty.TransactionType IN ('Deposit', 'Interest Income')
+                AND a.AccountID = t.AccountID
+                ) AS Inflow,
+             (
+                SELECT
+                SUM(t.TransactionAmount ) AS Outflow
+                FROM TransactionTable t
+                LEFT JOIN TransactionType ty ON t.TransactionTypeID = ty.TransactionTypeID
+                WHERE ty.TransactionType IN ('Bank Charges', 'Loan Payments', 'POS', 'Transfer', 'Withdrawals')
+                AND t.AccountID = a.AccountID
+                ) AS Outflow
+            FROM AccountTypes a
+    ) AS Trans
+JOIN Customer c
+ON Trans.CustomerID = c.CustomerID
+WHERE ISNULL(Inflow, 0) - Outflow < 0
+ORDER BY ISNULL(Inflow, 0) - Outflow ASC; 
+
 
 --Determine customers Eligible for Loan using customers transactions. Customers who have transacted at least 4 times
 -- and their total Inflow (Deposit and Interest income) is at least 2 million and their account status must be active.
@@ -133,43 +244,6 @@ ORDER BY
  GROUP BY t.AccountID, ts.StatusTypes, c.FirstNames + ' ' + c.LastName, c.Email, c.PhoneNumber
  HAVING COUNT(t.TransactionID) >=4 AND Sum(t.TransactionAmount) > 2000000
  ORDER BY Sum(t.TransactionAmount) ASC;
-
-
- --Retrieve customer details in a format that seperates inflow from outflow and shows account balance,
- --Commenting on amy anormalies found.
-SELECT
-    Trans.AccountID,
-    c.CustomerID,
-    c.FirstNames + ' ' + c.LastName AS FullName,
-    FORMAT(ISNULL(Inflow, 0), '#,##0') AS Inflow,
-    FORMAT(Outflow, '#,##0') AS Outflow, 
-    FORMAT(ISNULL(Inflow, 0) - Outflow, '#,##0') AS AccountBalFormatted
-FROM
-    (
-       SELECT
-            a.AccountID,
-            a.CustomerID,
-             (
-                SELECT
-                SUM(t.TransactionAmount) AS Inflow
-                FROM TransactionTable t
-                LEFT JOIN TransactionType ty ON t.TransactionTypeID = ty.TransactionTypeID
-                WHERE ty.TransactionType IN ('Deposit', 'Interest Income')
-                AND a.AccountID = t.AccountID
-                ) AS Inflow,
-             (
-                SELECT
-                SUM(t.TransactionAmount ) AS Outflow
-                FROM TransactionTable t
-                LEFT JOIN TransactionType ty ON t.TransactionTypeID = ty.TransactionTypeID
-                WHERE ty.TransactionType IN ('Bank Charges', 'Loan Payments', 'POS', 'Transfer', 'Withdrawals')
-                AND t.AccountID = a.AccountID
-                ) AS Outflow
-            FROM AccountTypes a
-    ) AS Trans
-JOIN Customer c
-ON Trans.CustomerID = c.CustomerID
-ORDER BY ISNULL(Inflow, 0) - Outflow ASC; 
 
 
  --Identify customers with the highest and least account balance
@@ -236,7 +310,7 @@ SELECT TOP 20
     a.CustomerID,
     CONCAT(c.FirstNames, ' ', c.LastName) AS FullName,
     FORMAT(SUM(CASE WHEN ty.TransactionType IN ('Deposit', 'Interest Income') 
-	THEN t.TransactionAmount ELSE 0 END), '#,##0') AS Inflow
+    THEN t.TransactionAmount ELSE 0 END), '#,##0') AS Inflow
 FROM 
     AccountTypes a
 JOIN 
@@ -249,58 +323,24 @@ GROUP BY
     a.AccountID, a.CustomerID, c.FirstNames, c.LastName
 ORDER BY 
     SUM(CASE WHEN ty.TransactionType IN ('Deposit', 'Interest Income')
-	THEN t.TransactionAmount ELSE 0 END) DESC;
+    THEN t.TransactionAmount ELSE 0 END) DESC;
 
- --Identify unique customers without cards so that a campaign can be sent to them to get cards.
- SELECT
-	a.AccountID,
-	c.CustomerID,
-	CONCAT(c.FirstNames,  '  ', c.LastName) AS CustomerName,
-	a.AccountTypes,
-	c.Email,
-	c.PhoneNumber
-
-FROM AccountTypes a 
-JOIN Customer c
-ON c.CustomerID=a.CustomerID
-JOIN AccountStatus s
-ON a.StatusID=s.StatusID
-WHERE a.AccountID Not In (SELECT AccountID FROM Cards);
-
-
---Identify customers whose accounts are inactive and dormant for reactivations.
-SELECT
-	a.AccountID,
-	c.CustomerID,
-	CONCAT(c.FirstNames,  '  ', c.LastName) AS CustomerName,
-	FORMAT(a.AccountOpeningDate, 'yyyy-MM-dd') AS OpeningDate,
-	a.AccountTypes,
-	s.StatusTypes,
-	c.Email,
-	c.PhoneNumber
-
-FROM Customer c
-JOIN AccountTypes a 
-ON c.CustomerID=a.CustomerID
-JOIN AccountStatus s
-ON a.StatusID=s.StatusID
-WHERE s.StatusTypes IN ('Inactive', 'Dormant');
 
  --Do an RFM analysis to segment customers using SQL
  SELECT
     t.AccountID,
-	CONCAT(c.FirstNames,  '  ', c.LastName) AS CustomerName,
+    CONCAT(c.FirstNames,  '  ', c.LastName) AS CustomerName,
     DATEDIFF(DAY, MAX(t.TransactionDate), '2024-01-01') AS Recency,
     COUNT(DISTINCT t.TransactionID) AS Frequency,
     FORMAT (SUM(CASE WHEN t.TransactionAmount > 0 THEN t.TransactionAmount ELSE 0 END),'#,##0') AS Monetary,
-	CONVERT(date, MAX(t.TransactionDate)) LastTransactionDate
+    CONVERT(date, MAX(t.TransactionDate)) LastTransactionDate
 FROM
     TransactionTable t
-	JOIN AccountTypes a 
-	ON t.AccountID=a.AccountID
-	Join Customer c
+JOIN AccountTypes a 
+ON t.AccountID=a.AccountID
+JOIN Customer c
 	ON a.CustomerID=c.CustomerID
-GROUP BY
-    t.AccountID, CONCAT(c.FirstNames,  '  ', c.LastName)
-	ORDER BY Recency ASC, Frequency DESC, 
-	SUM(CASE WHEN t.TransactionAmount > 0 THEN t.TransactionAmount ELSE 0 END) DESC;
+GROUP BY t.AccountID, CONCAT(c.FirstNames,  '  ', c.LastName)
+ORDER BY Recency ASC, Frequency DESC, 
+SUM(CASE WHEN t.TransactionAmount > 0 THEN t.TransactionAmount ELSE 0 END) DESC;
+
